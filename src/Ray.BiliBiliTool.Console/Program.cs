@@ -1,5 +1,5 @@
 ﻿using System;
-using System.IO;
+using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -12,6 +12,7 @@ using Ray.BiliBiliTool.Application.Extensions;
 using Ray.BiliBiliTool.Config;
 using Ray.BiliBiliTool.Config.Extensions;
 using Ray.BiliBiliTool.Config.Options;
+using Ray.BiliBiliTool.Console.Helpers;
 using Ray.BiliBiliTool.DomainService.Extensions;
 using Ray.BiliBiliTool.Infrastructure;
 using Serilog;
@@ -28,7 +29,7 @@ namespace Ray.BiliBiliTool.Console
 
             //如果配置了“1”就立即关闭，否则保持窗口以便查看日志信息
             if (RayConfiguration.Root["CloseConsoleWhenEnd"] == "1") return;
-            System.Console.ReadLine();
+            else System.Console.ReadLine();
         }
 
         /// <summary>
@@ -37,22 +38,24 @@ namespace Ray.BiliBiliTool.Console
         /// <param name="args"></param>
         public static void PreWorks(string[] args)
         {
+            //配置:
             RayConfiguration.Root = new ConfigurationBuilder()
                 .AddJsonFile("appsettings.json", false, true)
+                .AddJsonFileByEnv()
+                .AddExcludeEmptyEnvironmentVariables("Ray_")
                 .AddCommandLine(args, Constants.CommandLineMapper)
-                //.AddJsonFile("appsettings.local.json", true,true)
                 .Build();
 
             //日志:
             Log.Logger = new LoggerConfiguration()
                 .ReadFrom.Configuration(RayConfiguration.Root)
                 .WriteTo.TextWriter(PushService.PushStringWriter,
-                                    Serilog.Events.LogEventLevel.Information,
-                                    "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}\r\n")//用来做微信推送
+                    LogHelper.GetConsoleLogLevel(),
+                    LogHelper.GetConsoleLogTemplate() + "\r\n")//用来做微信推送
                 .CreateLogger();
 
             //Host:
-            var hostBuilder = new HostBuilder()
+            IHostBuilder hostBuilder = new HostBuilder()
                 .ConfigureServices((hostContext, services) =>
                 {
                     services.AddSingleton<IConfiguration>(RayConfiguration.Root);
@@ -72,30 +75,37 @@ namespace Ray.BiliBiliTool.Console
         /// </summary>
         public static void StartRun()
         {
-            using (var serviceScope = RayContainer.Root.CreateScope())
+            using IServiceScope serviceScope = RayContainer.Root.CreateScope();
+
+            //初始化DI相关的部分
+            IServiceProvider di = serviceScope.ServiceProvider;
+            RayContainer.SetGetServiceFunc(type => di.GetService(type));
+
+            ILogger<Program> logger = di.GetRequiredService<ILogger<Program>>();
+            logger.LogInformation(
+                "版本号：{version}",
+                typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "未知");
+            logger.LogInformation("开源地址：{url} \r\n", Constants.SourceCodeUrl);
+            logger.LogInformation("当前环境：{env} \r\n", RayConfiguration.Env ?? "无");
+
+            BiliBiliCookieOptions biliBiliCookieOptions = di.GetRequiredService<IOptionsMonitor<BiliBiliCookieOptions>>().CurrentValue;
+            if (!biliBiliCookieOptions.Check(logger))
+                throw new Exception($"请正确配置Cookie后再运行，配置方式见 {Constants.SourceCodeUrl}");
+
+            IDailyTaskAppService dailyTask = di.GetRequiredService<IDailyTaskAppService>();
+            PushService pushService = di.GetRequiredService<PushService>();
+
+            try
             {
-                var logger = serviceScope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-
-                BiliBiliCookieOptions biliBiliCookieOptions = serviceScope.ServiceProvider.GetRequiredService<IOptionsMonitor<BiliBiliCookieOptions>>().CurrentValue;
-                if (!biliBiliCookieOptions.Check(logger))
-                    throw new Exception("请正确配置Cookie后再运行，配置方式见 https://github.com/RayWangQvQ/BiliBiliTool");
-
-                IDailyTaskAppService dailyTask = serviceScope.ServiceProvider.GetRequiredService<IDailyTaskAppService>();
-                var pushService = serviceScope.ServiceProvider.GetRequiredService<PushService>();
-                bool isPushed = false;
-
-                try
-                {
-                    dailyTask.DoDailyTask();
-                }
-                catch
-                {
-                    pushService.SendStringWriter();
-                    isPushed = true;
-                }
-
-                if (!isPushed) pushService.SendStringWriter();
+                dailyTask.DoDailyTask();
             }
+            catch
+            {
+                pushService.SendStringWriter();
+                throw;
+            }
+
+            pushService.SendStringWriter();
         }
     }
 }

@@ -34,7 +34,7 @@ namespace Ray.BiliBiliTool.DomainService
 
             if (response.Code == 0)
             {
-                _logger.LogInformation($"直播签到成功，本次签到获得{response.Data.Text},{response.Data.SpecialText}");
+                _logger.LogInformation("直播签到成功，本次签到获得{text},{special}", response.Data.Text, response.Data.SpecialText);
             }
             else
             {
@@ -59,9 +59,9 @@ namespace Ray.BiliBiliTool.DomainService
             }
 
             var queryStatus = _liveApi.GetExchangeSilverStatus().Result;
-            var silver2CoinMoney = _coinDomainService.GetCoinBalance();
-
             _logger.LogInformation("当前银瓜子余额: {0}", queryStatus.Data.Silver);
+
+            var silver2CoinMoney = _coinDomainService.GetCoinBalance();
             _logger.LogInformation("当前硬币余额: {0}", silver2CoinMoney);
 
             return silver2CoinMoney;
